@@ -350,6 +350,9 @@ Thumbs.db
 # Node modules (if using Node.js projects)
 node_modules/
 
+# Next build (if using Next projects)
+.next/
+
 # Python cache (if using Python projects)
 __pycache__/
 *.pyc
