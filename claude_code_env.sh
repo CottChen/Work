@@ -10,6 +10,7 @@ NODE_MIN_VERSION=18
 NODE_INSTALL_VERSION=22
 NVM_VERSION="v0.40.3"
 CLAUDE_PACKAGE="@anthropic-ai/claude-code"
+CLAUDE_MIN_VERSION="2.1.2"
 CONFIG_DIR="$HOME/.claude"
 CONFIG_FILE="$CONFIG_DIR/settings.json"
 API_BASE_URL="https://open.bigmodel.cn/api/anthropic"
@@ -106,16 +107,59 @@ check_nodejs() {
 #     Claude Code 安装
 # ========================
 
+# 版本比较函数
+version_compare() {
+    # 检查第一个版本是否 >= 第二个版本
+    local version1="$1"
+    local version2="$2"
+
+    # 移除 'v' 前缀（如果有）
+    version1="${version1#v}"
+    version2="${version2#v}"
+
+    # 将版本号分割为数组
+    IFS='.' read -ra v1_parts <<< "$version1"
+    IFS='.' read -ra v2_parts <<< "$version2"
+
+    # 比较每个部分
+    for i in "${!v1_parts[@]}"; do
+        local v1_part="${v1_parts[i]:-0}"
+        local v2_part="${v2_parts[i]:-0}"
+
+        if [ "$v1_part" -gt "$v2_part" ]; then
+            return 0  # version1 > version2
+        elif [ "$v1_part" -lt "$v2_part" ]; then
+            return 1  # version1 < version2
+        fi
+    done
+
+    return 0  # version1 == version2
+}
+
 install_claude_code() {
     if command -v claude &>/dev/null; then
-        log_success "Claude Code is already installed: $(claude --version)"
+        current_version=$(claude --version 2>/dev/null || echo "unknown")
+        log_info "Claude Code is already installed: $current_version"
+
+        # 检查版本
+        if version_compare "$current_version" "$CLAUDE_MIN_VERSION"; then
+            log_success "Claude Code version $current_version meets requirement (>= $CLAUDE_MIN_VERSION)"
+        else
+            log_info "Claude Code version $current_version is outdated. Upgrading to $CLAUDE_MIN_VERSION..."
+            npm install -g "$CLAUDE_PACKAGE" || {
+                log_error "Failed to upgrade claude-code"
+                exit 1
+            }
+            new_version=$(claude --version 2>/dev/null || echo "unknown")
+            log_success "Claude Code upgraded to: $new_version"
+        fi
     else
         log_info "Installing Claude Code..."
         npm install -g "$CLAUDE_PACKAGE" || {
             log_error "Failed to install claude-code"
             exit 1
         }
-        log_success "Claude Code installed successfully"
+        log_success "Claude Code installed successfully: $(claude --version)"
     fi
 }
 
@@ -186,6 +230,66 @@ configure_claude() {
     }
 
     log_success "Claude Code configured successfully"
+}
+
+# ========================
+#     jq 安装函数
+# ========================
+
+install_jq() {
+    if command -v jq &>/dev/null; then
+        log_success "jq is already installed: $(jq --version)"
+        return 0
+    fi
+
+    local platform=$(uname -s)
+
+    case "$platform" in
+        Linux)
+            log_info "Installing jq on Linux..."
+
+            # 检测 Linux 发行版
+            if [ -f /etc/debian_version ]; then
+                # Debian/Ubuntu
+                log_info "Updating apt-get package list..."
+                sudo apt-get update
+                log_info "Installing jq..."
+                sudo apt-get install -y jq
+            elif [ -f /etc/redhat-release ]; then
+                # RHEL/CentOS/Fedora
+                sudo yum install -y jq || sudo dnf install -y jq
+            elif [ -f /etc/arch-release ]; then
+                # Arch Linux
+                sudo pacman -S --noconfirm jq
+            else
+                log_error "Unsupported Linux distribution. Please install jq manually."
+                exit 1
+            fi
+            ;;
+        Darwin)
+            log_info "Installing jq on macOS..."
+
+            # 检查是否安装了 Homebrew
+            if command -v brew &>/dev/null; then
+                brew install jq
+            else
+                log_error "Homebrew not found. Please install Homebrew first: https://brew.sh"
+                exit 1
+            fi
+            ;;
+        *)
+            log_error "Unsupported platform: $platform"
+            exit 1
+            ;;
+    esac
+
+    # 验证安装
+    if command -v jq &>/dev/null; then
+        log_success "jq installed successfully: $(jq --version)"
+    else
+        log_error "jq installation failed"
+        exit 1
+    fi
 }
 
 # ========================
@@ -385,6 +489,7 @@ main() {
     install_claude_code
     configure_claude_json
     configure_claude
+    install_jq
     configure_bashrc
     install_git
     configure_git
