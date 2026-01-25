@@ -10,7 +10,7 @@ NODE_MIN_VERSION=18
 NODE_INSTALL_VERSION=22
 NVM_VERSION="v0.40.3"
 CLAUDE_PACKAGE="@anthropic-ai/claude-code"
-CLAUDE_MIN_VERSION="2.1.2"
+CLAUDE_MIN_VERSION="2.1.11"
 CONFIG_DIR="$HOME/.claude"
 CONFIG_FILE="$CONFIG_DIR/settings.json"
 API_BASE_URL="https://open.bigmodel.cn/api/anthropic"
@@ -146,7 +146,7 @@ install_claude_code() {
             log_success "Claude Code version $current_version meets requirement (>= $CLAUDE_MIN_VERSION)"
         else
             log_info "Claude Code version $current_version is outdated. Upgrading to $CLAUDE_MIN_VERSION..."
-            npm install -g "$CLAUDE_PACKAGE" || {
+            npm install -g "$CLAUDE_PACKAGE@$CLAUDE_MIN_VERSION" || {
                 log_error "Failed to upgrade claude-code"
                 exit 1
             }
