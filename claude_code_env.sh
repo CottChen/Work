@@ -10,7 +10,7 @@ NODE_MIN_VERSION=18
 NODE_INSTALL_VERSION=22
 NVM_VERSION="v0.40.3"
 CLAUDE_PACKAGE="@anthropic-ai/claude-code"
-CLAUDE_MIN_VERSION="2.1.11"
+CLAUDE_MIN_VERSION="2.1.22"
 CONFIG_DIR="$HOME/.claude"
 CONFIG_FILE="$CONFIG_DIR/settings.json"
 API_BASE_URL="https://open.bigmodel.cn/api/anthropic"
@@ -293,6 +293,63 @@ install_jq() {
 }
 
 # ========================
+#     Tmux 安装函数
+# ========================
+
+install_tmux() {
+    if command -v tmux &>/dev/null; then
+        log_success "tmux is already installed: $(tmux -V)"
+        return 0
+    fi
+
+    local platform=$(uname -s)
+
+    case "$platform" in
+        Linux)
+            log_info "Installing tmux on Linux..."
+
+            # 检测 Linux 发行版
+            if [ -f /etc/debian_version ]; then
+                # Debian/Ubuntu
+                sudo apt-get update && sudo apt-get install -y tmux
+            elif [ -f /etc/redhat-release ]; then
+                # RHEL/CentOS/Fedora
+                sudo yum install -y tmux || sudo dnf install -y tmux
+            elif [ -f /etc/arch-release ]; then
+                # Arch Linux
+                sudo pacman -S --noconfirm tmux
+            else
+                log_error "Unsupported Linux distribution. Please install tmux manually."
+                exit 1
+            fi
+            ;;
+        Darwin)
+            log_info "Installing tmux on macOS..."
+
+            # 检查是否安装了 Homebrew
+            if command -v brew &>/dev/null; then
+                brew install tmux
+            else
+                log_error "Homebrew not found. Please install Homebrew first: https://brew.sh"
+                exit 1
+            fi
+            ;;
+        *)
+            log_error "Unsupported platform: $platform"
+            exit 1
+            ;;
+    esac
+
+    # 验证安装
+    if command -v tmux &>/dev/null; then
+        log_success "tmux installed successfully: $(tmux -V)"
+    else
+        log_error "tmux installation failed"
+        exit 1
+    fi
+}
+
+# ========================
 #     Git 安装函数
 # ========================
 
@@ -377,9 +434,81 @@ configure_git() {
     git config --global user.name "$git_name"
     git config --global user.email "$git_email"
 
+    # Git 中文配置
+    git config --global core.quotePath false
+    git config --global i18n.commitencoding utf-8
+    git config --global i18n.logoutputencoding utf-8
+    git config --global gui.encoding utf-8
+
     log_success "Git configured successfully:"
     echo "   User: $git_name"
     echo "   Email: $git_email"
+}
+
+# ========================
+#   中文 Locale 安装
+# ========================
+
+install_chinese_locale() {
+    local platform=$(uname -s)
+
+    case "$platform" in
+        Linux)
+            log_info "Installing Chinese locale..."
+            # 检测 Linux 发行版
+            if [ -f /etc/debian_version ]; then
+                # Debian/Ubuntu
+                sudo apt-get update
+                sudo apt-get install -y locales
+                sudo sed -i 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+                sudo sed -i 's/# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen
+                sudo locale-gen
+                sudo update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+                log_success "Chinese locale installed"
+            else
+                log_info "Non-Debian Linux. Please configure locale manually."
+            fi
+            ;;
+        Darwin)
+            log_info "macOS already supports Chinese locale by default"
+            ;;
+        *)
+            log_error "Unsupported platform: $platform"
+            ;;
+    esac
+}
+
+# ========================
+#   Vim 配置函数
+# ========================
+
+configure_vim() {
+    local vimrc_file="$HOME/.vimrc"
+
+    log_info "Configuring Vim for Chinese..."
+
+    # 检查是否已存在中文配置
+    if [ -f "$vimrc_file" ] && grep -q "encoding=utf-8" "$vimrc_file" 2>/dev/null; then
+        log_success "Vim Chinese configuration already exists"
+        return 0
+    fi
+
+    # 创建或追加 .vimrc
+    if [ ! -f "$vimrc_file" ]; then
+        touch "$vimrc_file"
+    fi
+
+    # 追加中文配置
+    cat >> "$vimrc_file" << 'EOF'
+
+" Chinese encoding support
+set encoding=utf-8
+set termencoding=utf-8
+set fileencoding=utf-8
+set fileencodings=utf-8,ucs-bom,gb18030,gbk,gb2312,cp936
+EOF
+
+    log_success "Vim configured for Chinese"
 }
 
 # ========================
@@ -490,9 +619,12 @@ main() {
     configure_claude_json
     configure_claude
     install_jq
+    install_tmux
+    install_chinese_locale
     configure_bashrc
     install_git
     configure_git
+    configure_vim
     init_project
 
     echo ""
