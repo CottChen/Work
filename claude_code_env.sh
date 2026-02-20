@@ -66,6 +66,17 @@ install_nodejs() {
             log_info "Installing Node.js $NODE_INSTALL_VERSION..."
             nvm install "$NODE_INSTALL_VERSION"
 
+            # 切换到新安装的 Node.js 版本
+            log_info "Switching to Node.js $NODE_INSTALL_VERSION..."
+            nvm use "$NODE_INSTALL_VERSION"
+
+            # 获取实际安装的精确版本号
+            INSTALLED_VERSION=$(node -v | sed 's/v//')
+
+            # 设置为默认版本（使用精确版本号）
+            log_info "Setting Node.js v$INSTALLED_VERSION as default..."
+            nvm alias default "$INSTALLED_VERSION"
+
             # 验证安装
             node -v &>/dev/null || {
                 log_error "Node.js installation failed"
@@ -161,6 +172,19 @@ install_claude_code() {
         }
         log_success "Claude Code installed successfully: $(claude --version)"
     fi
+}
+
+# ========================
+#     Happy 安装
+# ========================
+
+install_happy() {
+    log_info "Installing Happy..."
+    npm install -g happy-coder || {
+        log_error "Failed to install happy-coder"
+        exit 1
+    }
+    log_success "Happy installed successfully"
 }
 
 configure_claude_json(){
@@ -616,6 +640,7 @@ main() {
 
     check_nodejs
     install_claude_code
+    install_happy
     configure_claude_json
     configure_claude
     install_jq
