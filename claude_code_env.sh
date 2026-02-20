@@ -84,6 +84,14 @@ install_nodejs() {
             }
             log_success "Node.js installed: $(node -v)"
             log_success "npm version: $(npm -v)"
+
+            # 安装/升级 pnpm 到最新版本
+            log_info "Installing/upgrading pnpm to latest version..."
+            npm install -g pnpm@latest || {
+                log_error "Failed to install/upgrade pnpm"
+                exit 1
+            }
+            log_success "pnpm installed/upgraded to: $(pnpm -v)"
             ;;
         *)
             log_error "Unsupported platform: $platform"
