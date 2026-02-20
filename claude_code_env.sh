@@ -6,7 +6,7 @@ set -euo pipefail
 #       常量定义
 # ========================
 SCRIPT_NAME=$(basename "$0")
-NODE_MIN_VERSION=18
+NODE_MIN_VERSION=22
 NODE_INSTALL_VERSION=22
 NVM_VERSION="v0.40.3"
 CLAUDE_PACKAGE="@anthropic-ai/claude-code"
