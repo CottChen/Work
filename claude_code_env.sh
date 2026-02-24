@@ -574,6 +574,59 @@ configure_bashrc() {
 }
 
 # ========================
+#   Tmux 配置函数
+# ========================
+
+configure_tmux() {
+    local tmux_conf="$HOME/.tmux.conf"
+
+    log_info "Configuring tmux..."
+
+    # 创建 tmux 配置文件
+    if [ ! -f "$tmux_conf" ]; then
+        touch "$tmux_conf"
+    fi
+
+    # 检查配置是否已存在
+    if grep -q "set -g mouse on" "$tmux_conf" 2>/dev/null; then
+        log_success "tmux configuration already exists"
+        return 0
+    fi
+
+    # 添加 tmux 配置
+    cat >> "$tmux_conf" << 'EOF'
+
+# ========================
+# tmux configuration
+# ========================
+
+# 1. 启用鼠标支持，允许tmux拦截并处理鼠标滚动事件
+set -g mouse on
+
+# 2. 覆盖终端能力，禁用备用屏幕缓冲切换。这是解决大多数"附加后无法滚动"问题的关键。
+#    适用于以 `xterm` 开头的 $TERM (如 xterm-256color)。
+set -g terminal-overrides 'xterm*:smcup@:rmcup@'
+#    更通用的写法，覆盖更多终端类型：
+# set -g terminal-overrides 'xterm*:smcup@:rmcup@,screen*:smcup@:rmcup@'
+
+# 3. (可选但推荐) 设置一个较大的历史限制，确保有足够的历史可查看。
+set -g history-limit 10000
+
+# 4. 设置默认的终端类型，确保tmux内部程序（如vim）使用正确的颜色和支持。
+set -g default-terminal "screen-256color"
+# 或根据你的终端使用 "tmux-256color" (如果终端支持且tmux版本较新)
+# set -g default-terminal "tmux-256color"
+EOF
+
+    # 使配置生效
+    tmux source-file "$tmux_conf" 2>/dev/null || {
+        log_info "tmux is not running, configuration will take effect on next tmux start"
+    }
+
+    log_success "tmux configured successfully"
+}
+
+# ========================
 #   项目初始化函数
 # ========================
 
@@ -653,6 +706,7 @@ main() {
     configure_claude
     install_jq
     install_tmux
+    configure_tmux
     install_chinese_locale
     configure_bashrc
     install_git
