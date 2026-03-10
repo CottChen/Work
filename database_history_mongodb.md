@@ -59,6 +59,72 @@ storage:
       blockCompressor: snappy
 ```
 
+**重要澄清：MongoDB 的索引与存储结构**
+
+很多开发者甚至专家会有一个误解，认为"MongoDB 使用 B+Tree 存储数据"。实际上需要区分**索引结构**和**数据存储结构**：
+
+| 组件 | MongoDB (WiredTiger) | MySQL (InnoDB) | 说明 |
+|------|---------------------|----------------|------|
+| **索引结构** | B-Tree 变体 | B+Tree | ✅ 两者索引都是树形结构 |
+| **数据存储** | LSM-Tree | B+Tree (聚簇索引) | ❌ 底层存储完全不同 |
+
+**为什么会有这个误解？**
+
+1. **索引对外表现相似**：
+   - MongoDB 索引的创建、使用方式与 MySQL 非常相似
+   - 都支持范围查询、排序、覆盖索引
+   - `explain()` 输出中都能看到 `IXSCAN`（索引扫描）
+
+2. **历史原因**：
+   - MongoDB 早期使用 **MMAPv1** 存储引擎（2015 年前）
+   - MMAPv1 确实使用 B-Tree 存储数据
+   - 2015 年 3.0 版本切换到 WiredTiger 后改为 LSM-Tree
+
+3. **官方文档简化**：
+   - MongoDB 官方文档说"索引是 B-Tree"
+   - 但实际上 WiredTiger 的索引是一种复杂的混合结构
+
+**验证方式**：
+```javascript
+// 查看 MongoDB 索引使用情况
+db.users.find({ email: "test@example.com" }).explain("executionStats")
+
+// 输出:
+{
+  "queryPlanner": {
+    "winningPlan": {
+      "inputStage": {
+        "stage": "IXSCAN",      // ← 索引扫描 (B-Tree)
+        "keyPattern": { "email": 1 },
+        "indexName": "email_1"
+      }
+    }
+  }
+}
+
+// 但底层数据存储是 LSM-Tree：
+// - 写入先入内存 (Cache)
+// - 内存满后刷写到磁盘 (SSTable 格式)
+// - 后台 Compaction 合并多个 SSTable
+```
+
+**关键区别总结**：
+```
+MySQL InnoDB:
+┌─────────────────────────────────┐
+│  索引 (B+Tree) + 数据 (B+Tree)   │
+│  聚簇索引：数据即索引            │
+└─────────────────────────────────┘
+
+MongoDB WiredTiger:
+┌─────────────────────────────────┐
+│  索引 (B-Tree)                   │
+│       ↓                          │
+│  数据 (LSM-Tree: MemTable→SSTable)│
+│  非聚簇：索引指向文档位置        │
+└─────────────────────────────────┘
+```
+
 #### 2018 年：多文档事务
 
 **实现原理**：
