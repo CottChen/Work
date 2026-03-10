@@ -9,13 +9,49 @@ SCRIPT_NAME=$(basename "$0")
 NODE_MIN_VERSION=22
 NODE_INSTALL_VERSION=22
 NVM_VERSION="v0.40.3"
+
+# 国内镜像配置 - 多个镜像源
+declare -a NVM_MIRRORS=(
+    "https://gitee.com/mirrors/nvm/raw/master|Gitee"
+    "https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh|GitHub"
+)
+declare -a NODE_MIRRORS=(
+    "https://npmmirror.com/mirrors/node|npmmirror"
+    "https://mirrors.cloud.tencent.com/nodejs-release/|Tencent"
+    "https://mirrors.aliyun.com/nodejs-release/|Aliyun"
+)
+declare -a NPM_MIRRORS=(
+    "https://registry.npmmirror.com|npmmirror"
+    "https://registry.npm.taobao.org|Taobao"
+)
+declare -a APT_MIRRORS=(
+    "https://mirrors.tuna.tsinghua.edu.cn|Tsinghua"
+    "https://mirrors.aliyun.com|Aliyun"
+    "https://mirrors.ustc.edu.cn|USTC"
+    "https://mirrors.cloud.tencent.com|Tencent"
+)
+
+# 选中的最快镜像
+SELECTED_NVM_MIRROR=""
+SELECTED_NODE_MIRROR=""
+SELECTED_NPM_MIRROR=""
+SELECTED_APT_MIRROR=""
+SELECTED_NVM_MIRROR_NAME=""
+SELECTED_NODE_MIRROR_NAME=""
+SELECTED_NPM_MIRROR_NAME=""
+SELECTED_APT_MIRROR_NAME=""
+
 CLAUDE_PACKAGE="@anthropic-ai/claude-code"
-CLAUDE_MIN_VERSION="2.1.50"
+CLAUDE_MIN_VERSION="2.1.22"
 CONFIG_DIR="$HOME/.claude"
 CONFIG_FILE="$CONFIG_DIR/settings.json"
 API_BASE_URL="https://open.bigmodel.cn/api/anthropic"
 API_KEY_URL="https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys"
 API_TIMEOUT_MS=3000000
+
+# 全局变量存储安装的版本
+INSTALLED_NODE_VERSION=""
+INSTALLED_CLAUDE_PATH=""
 
 # ========================
 #       工具函数
@@ -44,6 +80,113 @@ ensure_dir_exists() {
 }
 
 # ========================
+#     镜像速度检测函数
+# ========================
+
+# 测试单个 URL 的响应时间（毫秒）
+# 返回：响应时间（毫秒），失败返回 99999
+test_url_speed() {
+    local url="$1"
+    local timeout="${2:-5}"  # 默认 5 秒超时
+
+    # 使用 curl 测试连接时间，只测试 TCP 连接建立时间
+    local result
+    result=$(curl -s -o /dev/null -w "%{time_connect}" \
+        --connect-timeout "$timeout" \
+        --max-time "$((timeout * 2))" \
+        "$url" 2>/dev/null) || result="99999"
+
+    # 转换为毫秒（整数）
+    if [[ "$result" == "99999" ]] || [ -z "$result" ]; then
+        echo "99999"
+    else
+        # 将秒转换为毫秒并取整（使用 awk 代替 bc，因为 awk 更通用）
+        echo "$result" | awk '{printf "%.0f", $1 * 1000}'
+    fi
+}
+
+# 从镜像列表中选择最快的镜像
+# 参数 1: 镜像数组名称
+# 参数 2: 测试路径（可选）
+# 输出：最快的镜像 URL|名称
+select_fastest_mirror() {
+    local mirror_array_name="$1"
+    local test_path="${2:-/}"
+
+    declare -n mirror_array="$mirror_array_name"
+    local fastest_url=""
+    local fastest_name=""
+    local fastest_time=99999
+
+    echo "   正在测试镜像源速度..."
+
+    for mirror_entry in "${mirror_array[@]}"; do
+        local url="${mirror_entry%%|*}"
+        local name="${mirror_entry##*|}"
+        local full_url="${url}${test_path}"
+
+        # 测试速度
+        local speed
+        speed=$(test_url_speed "$full_url" 5)
+
+        # 显示测试结果
+        if [ "$speed" -lt 99999 ]; then
+            printf "   %-15s: %d ms\n" "$name" "$speed"
+            if [ "$speed" -lt "$fastest_time" ]; then
+                fastest_time="$speed"
+                fastest_url="$url"
+                fastest_name="$name"
+            fi
+        else
+            printf "   %-15s: 超时/失败\n" "$name"
+        fi
+    done
+
+    echo "$fastest_url|$fastest_name"
+}
+
+# 检测并选择所有镜像源
+detect_fastest_mirrors() {
+    log_info "Detecting fastest mirror sources..."
+    echo ""
+
+    # 检测 NVM 镜像
+    local nvm_result
+    nvm_result=$(select_fastest_mirror "NVM_MIRRORS" "/install.sh")
+    SELECTED_NVM_MIRROR="${nvm_result%%|*}"
+    SELECTED_NVM_MIRROR_NAME="${nvm_result##*|}"
+    echo "   ✅ 选中：$SELECTED_NVM_MIRROR_NAME"
+    echo ""
+
+    # 检测 Node.js 镜像
+    local node_result
+    node_result=$(select_fastest_mirror "NODE_MIRRORS" "/")
+    SELECTED_NODE_MIRROR="${node_result%%|*}"
+    SELECTED_NODE_MIRROR_NAME="${node_result##*|}"
+    echo "   ✅ 选中：$SELECTED_NODE_MIRROR_NAME"
+    echo ""
+
+    # 检测 npm 镜像
+    local npm_result
+    npm_result=$(select_fastest_mirror "NPM_MIRRORS" "/")
+    SELECTED_NPM_MIRROR="${npm_result%%|*}"
+    SELECTED_NPM_MIRROR_NAME="${npm_result##*|}"
+    echo "   ✅ 选中：$SELECTED_NPM_MIRROR_NAME"
+    echo ""
+
+    # 检测 apt 镜像
+    local apt_result
+    apt_result=$(select_fastest_mirror "APT_MIRRORS" "/")
+    SELECTED_APT_MIRROR="${apt_result%%|*}"
+    SELECTED_APT_MIRROR_NAME="${apt_result##*|}"
+    echo "   ✅ 选中：$SELECTED_APT_MIRROR_NAME"
+    echo ""
+
+    log_success "Mirror detection completed"
+    echo ""
+}
+
+# ========================
 #     Node.js 安装函数
 # ========================
 
@@ -54,16 +197,40 @@ install_nodejs() {
         Linux|Darwin)
             log_info "Installing Node.js on $platform..."
 
-            # 安装 nvm
-            log_info "Installing nvm ($NVM_VERSION)..."
-            curl -s https://raw.githubusercontent.com/nvm-sh/nvm/"$NVM_VERSION"/install.sh | bash
+            # 设置 Node.js 镜像源（用于 nvm 下载 Node.js）
+            export NVM_NODEJS_ORG_MIRROR="$SELECTED_NODE_MIRROR"
+
+            # 检查 nvm 是否已安装
+            if [ -s "$HOME/.nvm/nvm.sh" ]; then
+                log_success "nvm is already installed"
+            else
+                # 安装 nvm（使用速度检测选中的镜像）
+                log_info "Installing nvm ($NVM_VERSION) from $SELECTED_NVM_MIRROR_NAME..."
+                if ! curl -s "$SELECTED_NVM_MIRROR/install.sh" | bash; then
+                    log_info "Mirror failed, trying alternative..."
+                    # 尝试备用镜像
+                    for mirror_entry in "${NVM_MIRRORS[@]}"; do
+                        local url="${mirror_entry%%|*}"
+                        local name="${mirror_entry##*|}"
+                        if [ "$url" != "$SELECTED_NVM_MIRROR" ]; then
+                            log_info "Trying $name..."
+                            if curl -s "$url/install.sh" | bash; then
+                                SELECTED_NVM_MIRROR="$url"
+                                SELECTED_NVM_MIRROR_NAME="$name"
+                                break
+                            fi
+                        fi
+                    done
+                fi
+                log_success "nvm installed from: $SELECTED_NVM_MIRROR_NAME"
+            fi
 
             # 加载 nvm
             log_info "Loading nvm environment..."
             \. "$HOME/.nvm/nvm.sh"
 
-            # 安装 Node.js
-            log_info "Installing Node.js $NODE_INSTALL_VERSION..."
+            # 安装 Node.js（使用镜像源）
+            log_info "Installing Node.js $NODE_INSTALL_VERSION from $SELECTED_NODE_MIRROR_NAME..."
             nvm install "$NODE_INSTALL_VERSION"
 
             # 切换到新安装的 Node.js 版本
@@ -71,11 +238,11 @@ install_nodejs() {
             nvm use "$NODE_INSTALL_VERSION"
 
             # 获取实际安装的精确版本号
-            INSTALLED_VERSION=$(node -v | sed 's/v//')
+            INSTALLED_NODE_VERSION=$(node -v | sed 's/v//')
 
             # 设置为默认版本（使用精确版本号）
-            log_info "Setting Node.js v$INSTALLED_VERSION as default..."
-            nvm alias default "$INSTALLED_VERSION"
+            log_info "Setting Node.js v$INSTALLED_NODE_VERSION as default..."
+            nvm alias default "$INSTALLED_NODE_VERSION"
 
             # 验证安装
             node -v &>/dev/null || {
@@ -85,9 +252,9 @@ install_nodejs() {
             log_success "Node.js installed: $(node -v)"
             log_success "npm version: $(npm -v)"
 
-            # 安装/升级 pnpm 到最新版本
+            # 安装/升级 pnpm 到最新版本（使用选中的镜像）
             log_info "Installing/upgrading pnpm to latest version..."
-            npm install -g pnpm@latest || {
+            npm install -g pnpm@latest --registry="$SELECTED_NPM_MIRROR" || {
                 log_error "Failed to install/upgrade pnpm"
                 exit 1
             }
@@ -105,11 +272,17 @@ install_nodejs() {
 # ========================
 
 check_nodejs() {
+    # 首先加载 nvm 环境（如果存在）
+    if [ -s "$HOME/.nvm/nvm.sh" ]; then
+        \. "$HOME/.nvm/nvm.sh"
+    fi
+
     if command -v node &>/dev/null; then
         current_version=$(node -v | sed 's/v//')
         major_version=$(echo "$current_version" | cut -d. -f1)
 
         if [ "$major_version" -ge "$NODE_MIN_VERSION" ]; then
+            INSTALLED_NODE_VERSION="$current_version"
             log_success "Node.js is already installed: v$current_version"
             return 0
         else
@@ -156,28 +329,41 @@ version_compare() {
 }
 
 install_claude_code() {
+    # 首先加载 nvm 环境（如果存在）
+    if [ -s "$HOME/.nvm/nvm.sh" ]; then
+        \. "$HOME/.nvm/nvm.sh"
+    fi
+
+    # 使用选中的 npm 镜像源
+    local npm_registry="$SELECTED_NPM_MIRROR"
+
     if command -v claude &>/dev/null; then
         current_version=$(claude --version 2>/dev/null || echo "unknown")
         log_info "Claude Code is already installed: $current_version"
+
+        # 获取 claude 命令路径
+        INSTALLED_CLAUDE_PATH=$(which claude 2>/dev/null || echo "")
 
         # 检查版本
         if version_compare "$current_version" "$CLAUDE_MIN_VERSION"; then
             log_success "Claude Code version $current_version meets requirement (>= $CLAUDE_MIN_VERSION)"
         else
             log_info "Claude Code version $current_version is outdated. Upgrading to $CLAUDE_MIN_VERSION..."
-            npm install -g "$CLAUDE_PACKAGE@$CLAUDE_MIN_VERSION" || {
+            npm install -g "$CLAUDE_PACKAGE@$CLAUDE_MIN_VERSION" --registry="$npm_registry" || {
                 log_error "Failed to upgrade claude-code"
                 exit 1
             }
             new_version=$(claude --version 2>/dev/null || echo "unknown")
+            INSTALLED_CLAUDE_PATH=$(which claude 2>/dev/null || echo "")
             log_success "Claude Code upgraded to: $new_version"
         fi
     else
         log_info "Installing Claude Code..."
-        npm install -g "$CLAUDE_PACKAGE" || {
+        npm install -g "$CLAUDE_PACKAGE@$CLAUDE_MIN_VERSION" --registry="$npm_registry" || {
             log_error "Failed to install claude-code"
             exit 1
         }
+        INSTALLED_CLAUDE_PATH=$(which claude 2>/dev/null || echo "")
         log_success "Claude Code installed successfully: $(claude --version)"
     fi
 }
@@ -187,8 +373,16 @@ install_claude_code() {
 # ========================
 
 install_happy() {
+    # 检查 happy 是否已安装
+    if command -v happy &>/dev/null; then
+        local happy_version
+        happy_version=$(happy --version 2>/dev/null || echo "unknown")
+        log_success "Happy is already installed: $happy_version"
+        return 0
+    fi
+
     log_info "Installing Happy..."
-    npm install -g happy-coder || {
+    npm install -g happy-coder --registry="$SELECTED_NPM_MIRROR" || {
         log_error "Failed to install happy-coder"
         exit 1
     }
@@ -268,6 +462,78 @@ configure_claude() {
 #     jq 安装函数
 # ========================
 
+# 配置国内 apt 镜像源
+configure_apt_mirror() {
+    if [ -f /etc/debian_version ]; then
+        # 检测是否为 Raspberry Pi OS
+        local is_rpi=false
+        if [ -f /etc/rpi-issue ] || grep -q "Raspberry Pi" /proc/device-tree/model 2>/dev/null; then
+            is_rpi=true
+        fi
+
+        # 如果已配置镜像源，则跳过
+        local configured_mirror=""
+        for mirror_entry in "${APT_MIRRORS[@]}"; do
+            local url="${mirror_entry%%|*}"
+            local domain="${url#https://}"
+            domain="${domain%%/*}"
+            if grep -q "$domain" /etc/apt/sources.list 2>/dev/null; then
+                configured_mirror="$domain"
+                break
+            fi
+        done
+
+        if [ -n "$configured_mirror" ]; then
+            log_info "Apt mirror already configured: $configured_mirror"
+            return 0
+        fi
+
+        log_info "Configuring apt mirror from fastest source: $SELECTED_APT_MIRROR_NAME..."
+
+        # 备份原始源
+        sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak 2>/dev/null || true
+
+        # 提取镜像域名
+        local mirror_domain="${SELECTED_APT_MIRROR#https://}"
+        mirror_domain="${mirror_domain%%/*}"
+
+        if [ "$is_rpi" = true ]; then
+            # Raspberry Pi OS 使用不同的源
+            log_info "Detected Raspberry Pi OS, configuring RPi mirrors..."
+            sudo tee /etc/apt/sources.list > /dev/null << EOF
+deb https://$mirror_domain/raspbian/raspbian/ bookworm main contrib non-free non-free-firmware
+deb https://$mirror_domain/raspbian/raspbian/ bookworm-updates main contrib non-free non-free-firmware
+deb https://$mirror_domain/raspbian/raspbian/ bookworm-backports main contrib non-free non-free-firmware
+deb https://$mirror_domain/raspberrypi/ bookworm main
+EOF
+            log_success "apt mirror configured: $SELECTED_APT_MIRROR_NAME RPi mirror"
+        else
+            # 检测 Debian 版本
+            local debian_version=$(cat /etc/debian_version | cut -d. -f1)
+            local codename=""
+
+            case "$debian_version" in
+                12) codename="bookworm" ;;
+                11) codename="bullseye" ;;
+                10) codename="buster" ;;
+                *)
+                    log_info "Unknown Debian version, using official source"
+                    return 0
+                    ;;
+            esac
+
+            # 使用选中的镜像源
+            sudo tee /etc/apt/sources.list > /dev/null << EOF
+deb https://$mirror_domain/debian/ ${codename} main contrib non-free non-free-firmware
+deb https://$mirror_domain/debian/ ${codename}-updates main contrib non-free non-free-firmware
+deb https://$mirror_domain/debian/ ${codename}-backports main contrib non-free non-free-firmware
+deb https://$mirror_domain/debian-security ${codename}-security main contrib non-free non-free-firmware
+EOF
+            log_success "apt mirror configured: $SELECTED_APT_MIRROR_NAME"
+        fi
+    fi
+}
+
 install_jq() {
     if command -v jq &>/dev/null; then
         log_success "jq is already installed: $(jq --version)"
@@ -282,7 +548,8 @@ install_jq() {
 
             # 检测 Linux 发行版
             if [ -f /etc/debian_version ]; then
-                # Debian/Ubuntu
+                # Debian/Ubuntu - 先配置国内镜像
+                configure_apt_mirror
                 log_info "Updating apt-get package list..."
                 sudo apt-get update
                 log_info "Installing jq..."
@@ -342,7 +609,8 @@ install_tmux() {
 
             # 检测 Linux 发行版
             if [ -f /etc/debian_version ]; then
-                # Debian/Ubuntu
+                # Debian/Ubuntu - 先配置国内镜像
+                configure_apt_mirror
                 sudo apt-get update && sudo apt-get install -y tmux
             elif [ -f /etc/redhat-release ]; then
                 # RHEL/CentOS/Fedora
@@ -399,7 +667,8 @@ install_git() {
 
             # 检测 Linux 发行版
             if [ -f /etc/debian_version ]; then
-                # Debian/Ubuntu
+                # Debian/Ubuntu - 先配置国内镜像
+                configure_apt_mirror
                 sudo apt-get update && sudo apt-get install -y git
             elif [ -f /etc/redhat-release ]; then
                 # RHEL/CentOS/Fedora
@@ -489,7 +758,8 @@ install_chinese_locale() {
             log_info "Installing Chinese locale..."
             # 检测 Linux 发行版
             if [ -f /etc/debian_version ]; then
-                # Debian/Ubuntu
+                # Debian/Ubuntu - 先配置国内镜像
+                configure_apt_mirror
                 sudo apt-get update
                 sudo apt-get install -y locales
                 sudo sed -i 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
@@ -627,6 +897,100 @@ EOF
 }
 
 # ========================
+#   PATH 优先级配置函数
+# ========================
+
+configure_path_priority() {
+    log_info "Configuring PATH priority..."
+
+    # 加载 nvm 环境以获取正确的路径
+    if [ -s "$HOME/.nvm/nvm.sh" ]; then
+        \. "$HOME/.nvm/nvm.sh"
+    fi
+
+    # 确定 Node.js 路径
+    local node_path=""
+    if [ -n "$INSTALLED_NODE_VERSION" ] && [ -d "$HOME/.nvm/versions/node/v$INSTALLED_NODE_VERSION/bin" ]; then
+        node_path="$HOME/.nvm/versions/node/v$INSTALLED_NODE_VERSION/bin"
+    elif [ -d "$HOME/.nvm/versions/node/v22.22.0/bin" ]; then
+        # 回退到常见版本
+        node_path="$HOME/.nvm/versions/node/v22.22.0/bin"
+        INSTALLED_NODE_VERSION="22.22.0"
+    fi
+
+    # 确定 Claude Code 路径
+    local claude_path=""
+    if [ -n "$INSTALLED_CLAUDE_PATH" ]; then
+        # 获取 claude 所在目录
+        claude_path=$(dirname "$INSTALLED_CLAUDE_PATH")
+    elif command -v claude &>/dev/null; then
+        claude_path=$(dirname "$(which claude)")
+    fi
+
+    # 创建 PATH 配置内容
+    local path_config=""
+    if [ -n "$node_path" ]; then
+        path_config="$path_config
+# Prioritize Node.js v$INSTALLED_NODE_VERSION
+if [ -d \"$node_path\" ] ; then
+    PATH=\"$node_path:\$PATH\"
+fi"
+    fi
+
+    if [ -n "$claude_path" ]; then
+        path_config="$path_config
+
+# Prioritize Claude Code
+if [ -d \"$claude_path\" ] ; then
+    PATH=\"$claude_path:\$PATH\"
+fi"
+    fi
+
+    if [ -z "$path_config" ]; then
+        log_info "No PATH configuration needed (paths not found)"
+        return 0
+    fi
+
+    # 检查 ~/.profile 是否存在
+    local profile_file="$HOME/.profile"
+    if [ ! -f "$profile_file" ]; then
+        touch "$profile_file"
+    fi
+
+    # 检查配置是否已存在
+    if grep -q "Prioritize Node.js" "$profile_file" 2>/dev/null; then
+        log_success "PATH priority configuration already exists in ~/.profile"
+    else
+        # 追加到 ~/.profile 开头（在任何现有内容之前）
+        local temp_file
+        temp_file=$(mktemp)
+        echo "$path_config" > "$temp_file"
+        cat "$profile_file" >> "$temp_file"
+        mv "$temp_file" "$profile_file"
+        log_success "PATH priority added to ~/.profile"
+    fi
+
+    # 同时更新当前 shell 的 PATH
+    if [ -n "$node_path" ]; then
+        export PATH="$node_path:$PATH"
+    fi
+    if [ -n "$claude_path" ]; then
+        export PATH="$claude_path:$PATH"
+    fi
+
+    # 验证优先级
+    log_info "Verifying PATH priority..."
+    if command -v node &>/dev/null; then
+        log_info "Node.js path: $(which node)"
+    fi
+    if command -v claude &>/dev/null; then
+        log_info "Claude Code path: $(which claude)"
+    fi
+
+    log_success "PATH priority configured successfully"
+}
+
+# ========================
 #   项目初始化函数
 # ========================
 
@@ -698,9 +1062,28 @@ EOF
 
 main() {
     echo "🚀 Starting $SCRIPT_NAME"
+    echo ""
+
+    # 检测系统信息
+    local platform=$(uname -s)
+    local arch=$(uname -m)
+    echo "📋 System Information:"
+    echo "   Platform: $platform"
+    echo "   Architecture: $arch"
+
+    # 检测是否为 Raspberry Pi
+    if [ -f /etc/rpi-issue ] || grep -q "Raspberry Pi" /proc/device-tree/model 2>/dev/null; then
+        echo "   Device: Raspberry Pi detected"
+        log_info "Raspberry Pi optimization enabled"
+    fi
+    echo ""
+
+    # 检测并选择最快的镜像源
+    detect_fastest_mirrors
 
     check_nodejs
     install_claude_code
+    configure_path_priority
     install_happy
     configure_claude_json
     configure_claude
