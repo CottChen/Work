@@ -69,6 +69,10 @@ log_error() {
     echo "❌ $*" >&2
 }
 
+log_warn() {
+    echo "⚠️ $*"
+}
+
 ensure_dir_exists() {
     local dir="$1"
     if [ ! -d "$dir" ]; then
@@ -76,6 +80,26 @@ ensure_dir_exists() {
             log_error "Failed to create directory: $dir"
             exit 1
         }
+    fi
+}
+
+# 检查是否有 sudo 权限
+has_sudo() {
+    if sudo -n true 2>/dev/null; then
+        return 0  # 有 sudo 权限
+    else
+        return 1  # 无 sudo 权限
+    fi
+}
+
+# 尝试执行 sudo 命令，如果失败则返回非零状态
+try_sudo() {
+    if has_sudo; then
+        sudo "$@"
+        return $?
+    else
+        log_warn "缺少 sudo 权限，跳过需要 root 权限的操作: $*"
+        return 1
     fi
 }
 
@@ -328,6 +352,33 @@ version_compare() {
     return 0  # version1 == version2
 }
 
+# 获取 Claude Code 最新版本
+get_latest_claude_version() {
+    local npm_registry="$1"
+    local latest_version
+    latest_version=$(npm view "$CLAUDE_PACKAGE" version --registry="$npm_registry" 2>/dev/null || echo "")
+    if [ -z "$latest_version" ]; then
+        echo ""
+    else
+        echo "$latest_version"
+    fi
+}
+
+# 安装指定版本的 Claude Code
+install_claude_code_version() {
+    local version="$1"
+    local npm_registry="$2"
+
+    log_info "Installing Claude Code $version..."
+    npm install -g "$CLAUDE_PACKAGE@$version" --registry="$npm_registry" || {
+        log_error "Failed to install claude-code $version"
+        return 1
+    }
+    INSTALLED_CLAUDE_PATH=$(which claude 2>/dev/null || echo "")
+    log_success "Claude Code installed successfully: $(claude --version)"
+    return 0
+}
+
 install_claude_code() {
     # 首先加载 nvm 环境（如果存在）
     if [ -s "$HOME/.nvm/nvm.sh" ]; then
@@ -358,13 +409,56 @@ install_claude_code() {
             log_success "Claude Code upgraded to: $new_version"
         fi
     else
-        log_info "Installing Claude Code..."
-        npm install -g "$CLAUDE_PACKAGE@$CLAUDE_MIN_VERSION" --registry="$npm_registry" || {
-            log_error "Failed to install claude-code"
-            exit 1
-        }
-        INSTALLED_CLAUDE_PATH=$(which claude 2>/dev/null || echo "")
-        log_success "Claude Code installed successfully: $(claude --version)"
+        log_info "Claude Code 未安装"
+        echo ""
+
+        # 获取最新版本
+        local latest_version
+        latest_version=$(get_latest_claude_version "$npm_registry")
+
+        if [ -z "$latest_version" ]; then
+            log_warn "无法获取最新版本信息，将安装默认版本: $CLAUDE_MIN_VERSION"
+            install_claude_code_version "$CLAUDE_MIN_VERSION" "$npm_registry"
+            return $?
+        fi
+
+        # 显示版本选择菜单
+        echo "📦 请选择要安装的 Claude Code 版本:"
+        echo ""
+        echo "   1) 最新版本: $latest_version"
+        echo "   2) 默认版本: $CLAUDE_MIN_VERSION"
+        echo "   3) 指定版本"
+        echo ""
+        read -p "   请输入选项 [1-3]: " version_choice
+
+        case "$version_choice" in
+            1)
+                echo ""
+                log_info "正在安装最新版本: $latest_version"
+                install_claude_code_version "$latest_version" "$npm_registry"
+                ;;
+            2)
+                echo ""
+                log_info "正在安装默认版本: $CLAUDE_MIN_VERSION"
+                install_claude_code_version "$CLAUDE_MIN_VERSION" "$npm_registry"
+                ;;
+            3)
+                echo ""
+                read -p "   请输入版本号 (例如: 2.1.30): " custom_version
+                if [ -z "$custom_version" ]; then
+                    log_error "版本号不能为空"
+                    install_claude_code_version "$CLAUDE_MIN_VERSION" "$npm_registry"
+                else
+                    log_info "正在安装指定版本: $custom_version"
+                    install_claude_code_version "$custom_version" "$npm_registry"
+                fi
+                ;;
+            *)
+                echo ""
+                log_warn "无效选项，将安装默认版本: $CLAUDE_MIN_VERSION"
+                install_claude_code_version "$CLAUDE_MIN_VERSION" "$npm_registry"
+                ;;
+        esac
     fi
 }
 
@@ -465,6 +559,12 @@ configure_claude() {
 # 配置国内 apt 镜像源
 configure_apt_mirror() {
     if [ -f /etc/debian_version ]; then
+        # 检查是否有 sudo 权限
+        if ! has_sudo; then
+            log_warn "缺少 sudo 权限，跳过 apt 镜像配置（将使用系统默认源）"
+            return 0
+        fi
+
         # 检测是否为 Raspberry Pi OS
         local is_rpi=false
         if [ -f /etc/rpi-issue ] || grep -q "Raspberry Pi" /proc/device-tree/model 2>/dev/null; then
@@ -546,6 +646,13 @@ install_jq() {
         Linux)
             log_info "Installing jq on Linux..."
 
+            # 检查是否有 sudo 权限
+            if ! has_sudo; then
+                log_warn "缺少 sudo 权限，无法安装 jq"
+                log_warn "请手动安装 jq: sudo apt-get install -y jq"
+                return 0
+            fi
+
             # 检测 Linux 发行版
             if [ -f /etc/debian_version ]; then
                 # Debian/Ubuntu - 先配置国内镜像
@@ -561,8 +668,8 @@ install_jq() {
                 # Arch Linux
                 sudo pacman -S --noconfirm jq
             else
-                log_error "Unsupported Linux distribution. Please install jq manually."
-                exit 1
+                log_warn "Unsupported Linux distribution. Please install jq manually."
+                return 0
             fi
             ;;
         Darwin)
@@ -572,13 +679,13 @@ install_jq() {
             if command -v brew &>/dev/null; then
                 brew install jq
             else
-                log_error "Homebrew not found. Please install Homebrew first: https://brew.sh"
-                exit 1
+                log_warn "Homebrew not found. Please install Homebrew first: https://brew.sh"
+                return 0
             fi
             ;;
         *)
-            log_error "Unsupported platform: $platform"
-            exit 1
+            log_warn "Unsupported platform: $platform"
+            return 0
             ;;
     esac
 
@@ -586,8 +693,7 @@ install_jq() {
     if command -v jq &>/dev/null; then
         log_success "jq installed successfully: $(jq --version)"
     else
-        log_error "jq installation failed"
-        exit 1
+        log_warn "jq installation failed, but continuing..."
     fi
 }
 
@@ -607,6 +713,13 @@ install_tmux() {
         Linux)
             log_info "Installing tmux on Linux..."
 
+            # 检查是否有 sudo 权限
+            if ! has_sudo; then
+                log_warn "缺少 sudo 权限，无法安装 tmux"
+                log_warn "请手动安装 tmux: sudo apt-get install -y tmux"
+                return 0
+            fi
+
             # 检测 Linux 发行版
             if [ -f /etc/debian_version ]; then
                 # Debian/Ubuntu - 先配置国内镜像
@@ -619,8 +732,8 @@ install_tmux() {
                 # Arch Linux
                 sudo pacman -S --noconfirm tmux
             else
-                log_error "Unsupported Linux distribution. Please install tmux manually."
-                exit 1
+                log_warn "Unsupported Linux distribution. Please install tmux manually."
+                return 0
             fi
             ;;
         Darwin)
@@ -630,13 +743,13 @@ install_tmux() {
             if command -v brew &>/dev/null; then
                 brew install tmux
             else
-                log_error "Homebrew not found. Please install Homebrew first: https://brew.sh"
-                exit 1
+                log_warn "Homebrew not found. Please install Homebrew first: https://brew.sh"
+                return 0
             fi
             ;;
         *)
-            log_error "Unsupported platform: $platform"
-            exit 1
+            log_warn "Unsupported platform: $platform"
+            return 0
             ;;
     esac
 
@@ -644,8 +757,7 @@ install_tmux() {
     if command -v tmux &>/dev/null; then
         log_success "tmux installed successfully: $(tmux -V)"
     else
-        log_error "tmux installation failed"
-        exit 1
+        log_warn "tmux installation failed, but continuing..."
     fi
 }
 
@@ -665,6 +777,13 @@ install_git() {
         Linux)
             log_info "Installing Git on Linux..."
 
+            # 检查是否有 sudo 权限
+            if ! has_sudo; then
+                log_warn "缺少 sudo 权限，无法安装 Git"
+                log_warn "请手动安装 Git: sudo apt-get install -y git"
+                return 0
+            fi
+
             # 检测 Linux 发行版
             if [ -f /etc/debian_version ]; then
                 # Debian/Ubuntu - 先配置国内镜像
@@ -677,8 +796,8 @@ install_git() {
                 # Arch Linux
                 sudo pacman -S --noconfirm git
             else
-                log_error "Unsupported Linux distribution. Please install Git manually."
-                exit 1
+                log_warn "Unsupported Linux distribution. Please install Git manually."
+                return 0
             fi
             ;;
         Darwin)
@@ -689,13 +808,13 @@ install_git() {
                 brew install git
             else
                 # macOS 通常自带 Git，如果不存在则提示用户安装
-                log_error "Git not found. Please install Git via: xcode-select --install"
-                exit 1
+                log_warn "Git not found. Please install Git via: xcode-select --install"
+                return 0
             fi
             ;;
         *)
-            log_error "Unsupported platform: $platform"
-            exit 1
+            log_warn "Unsupported platform: $platform"
+            return 0
             ;;
     esac
 
@@ -703,8 +822,7 @@ install_git() {
     if command -v git &>/dev/null; then
         log_success "Git installed successfully: $(git --version)"
     else
-        log_error "Git installation failed"
-        exit 1
+        log_warn "Git installation failed, but continuing..."
     fi
 }
 
@@ -758,6 +876,18 @@ install_chinese_locale() {
             log_info "Installing Chinese locale..."
             # 检测 Linux 发行版
             if [ -f /etc/debian_version ]; then
+                # 检查是否有 sudo 权限
+                if ! has_sudo; then
+                    log_warn "缺少 sudo 权限，跳过中文 locale 安装"
+                    # 检查是否已有中文 locale 支持
+                    if locale -a 2>/dev/null | grep -q "zh_CN.utf8"; then
+                        log_success "系统已支持中文 locale"
+                    else
+                        log_warn "系统不支持中文 locale，可能影响中文显示"
+                    fi
+                    return 0
+                fi
+
                 # Debian/Ubuntu - 先配置国内镜像
                 configure_apt_mirror
                 sudo apt-get update
