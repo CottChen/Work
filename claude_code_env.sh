@@ -6,8 +6,8 @@ set -euo pipefail
 #       常量定义
 # ========================
 SCRIPT_NAME=$(basename "$0")
-NODE_MIN_VERSION=22
-NODE_INSTALL_VERSION=22
+NODE_MIN_VERSION=24
+NODE_INSTALL_VERSION=24
 NVM_VERSION="v0.40.3"
 
 # 国内镜像配置 - 多个镜像源
